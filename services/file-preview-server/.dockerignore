@@ -1,0 +1,12 @@
+target/
+!server/target/kkFileView-*.tar.gz
+.git/
+.gitignore
+*.md
+.DS_Store
+.idea/
+*.iml
+*.log
+node_modules/
+doc/
+docker/

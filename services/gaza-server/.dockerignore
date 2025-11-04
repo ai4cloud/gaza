@@ -1,0 +1,15 @@
+target/
+!target/yudao-server.jar
+.git/
+.gitignore
+.mvn/
+*.md
+.DS_Store
+.idea/
+*.iml
+*.log
+node_modules/
+yudao-ui/
+script/
+sql/
+docs/

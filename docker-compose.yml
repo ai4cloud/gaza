@@ -1,165 +1,303 @@
 version: '3.8'
 
+name: gaza-system
+
 services:
-  # Java服务1 - 根据实际情况修改服务名称
-  java-service-1:
-    build:
-      context: ./services/java-service-1
-      dockerfile: Dockerfile
-    container_name: java-service-1
-    ports:
-      - "${JAVA_SERVICE_1_PORT:-8080}:8080"
-    environment:
-      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
-      - DATABASE_URL=${DATABASE_URL}
-      - DATABASE_USERNAME=${DATABASE_USERNAME}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
-    depends_on:
-      - database
-    networks:
-      - app-network
-    restart: unless-stopped
-    volumes:
-      - java-service-1-logs:/app/logs
+  # ==================== 基础设施服务 ====================
 
-  # Java服务2 - 根据实际情况修改服务名称
-  java-service-2:
-    build:
-      context: ./services/java-service-2
-      dockerfile: Dockerfile
-    container_name: java-service-2
-    ports:
-      - "${JAVA_SERVICE_2_PORT:-8081}:8080"
-    environment:
-      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
-      - DATABASE_URL=${DATABASE_URL}
-      - DATABASE_USERNAME=${DATABASE_USERNAME}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
-    depends_on:
-      - database
-    networks:
-      - app-network
-    restart: unless-stopped
-    volumes:
-      - java-service-2-logs:/app/logs
-
-  # Vue3前端
-  vue-frontend:
-    build:
-      context: ./services/vue-frontend
-      dockerfile: Dockerfile
-      args:
-        - VUE_APP_API_URL=${VUE_APP_API_URL}
-    container_name: vue-frontend
-    ports:
-      - "${VUE_PORT:-3000}:80"
-    depends_on:
-      - java-service-1
-      - java-service-2
-    networks:
-      - app-network
-    restart: unless-stopped
-
-  # React前端
-  react-frontend:
-    build:
-      context: ./services/react-frontend
-      dockerfile: Dockerfile
-      args:
-        - REACT_APP_API_URL=${REACT_APP_API_URL}
-    container_name: react-frontend
-    ports:
-      - "${REACT_PORT:-3001}:80"
-    depends_on:
-      - java-service-1
-      - python-service
-    networks:
-      - app-network
-    restart: unless-stopped
-
-  # Python服务
-  python-service:
-    build:
-      context: ./services/python-service
-      dockerfile: Dockerfile
-    container_name: python-service
-    ports:
-      - "${PYTHON_SERVICE_PORT:-5000}:5000"
-    environment:
-      - FLASK_ENV=${FLASK_ENV:-production}
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-    depends_on:
-      - database
-      - redis
-    networks:
-      - app-network
-    restart: unless-stopped
-    volumes:
-      - python-service-data:/app/data
-
-  # 数据库 (MySQL/PostgreSQL - 根据需要选择)
-  database:
+  # MySQL 数据库（所有服务共享）
+  mysql:
     image: mysql:8.0
-    # 或使用 PostgreSQL: image: postgres:15-alpine
-    container_name: database
-    ports:
-      - "${DATABASE_PORT:-3306}:3306"
-    environment:
-      - MYSQL_ROOT_PASSWORD=${DATABASE_ROOT_PASSWORD}
-      - MYSQL_DATABASE=${DATABASE_NAME}
-      - MYSQL_USER=${DATABASE_USERNAME}
-      - MYSQL_PASSWORD=${DATABASE_PASSWORD}
-      # PostgreSQL配置:
-      # - POSTGRES_DB=${DATABASE_NAME}
-      # - POSTGRES_USER=${DATABASE_USERNAME}
-      # - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
-    networks:
-      - app-network
+    container_name: gaza-mysql
     restart: unless-stopped
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-gaza_root_2024}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-gaza_db}
+      MYSQL_USER: ${MYSQL_USER:-gaza_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-gaza_pass_2024}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
     volumes:
-      - database-data:/var/lib/mysql
-      # PostgreSQL: - database-data:/var/lib/postgresql/data
+      - mysql-data:/var/lib/mysql
+      # 可选：挂载SQL初始化文件
+      # - ./sql/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - gaza-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-gaza_root_2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Redis (如果需要缓存)
+  # Redis 缓存
   redis:
     image: redis:7-alpine
-    container_name: redis
+    container_name: gaza-redis
+    restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
-    networks:
-      - app-network
-    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-gaza_redis_2024}
     volumes:
       - redis-data:/data
+    networks:
+      - gaza-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
-  # Nginx反向代理 (可选，用于统一入口)
+  # ==================== 后端服务 ====================
+
+  # Gaza Server - 主后端服务 (ruoyi-vue-pro)
+  gaza-server:
+    build:
+      context: ./services/gaza-server
+      dockerfile: Dockerfile
+    image: gaza-server:latest
+    container_name: gaza-server
+    restart: unless-stopped
+    ports:
+      - "${GAZA_SERVER_PORT:-48080}:48080"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      TZ: Asia/Shanghai
+      JAVA_OPTS: ${GAZA_SERVER_JAVA_OPTS:--Xms512m -Xmx1024m -Djava.security.egd=file:/dev/./urandom}
+      ARGS: >-
+        --spring.datasource.dynamic.datasource.master.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-gaza_db}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
+        --spring.datasource.dynamic.datasource.master.username=${MYSQL_USER:-gaza_user}
+        --spring.datasource.dynamic.datasource.master.password=${MYSQL_PASSWORD:-gaza_pass_2024}
+        --spring.datasource.dynamic.datasource.slave.url=jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-gaza_db}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
+        --spring.datasource.dynamic.datasource.slave.username=${MYSQL_USER:-gaza_user}
+        --spring.datasource.dynamic.datasource.slave.password=${MYSQL_PASSWORD:-gaza_pass_2024}
+        --spring.data.redis.host=redis
+        --spring.data.redis.password=${REDIS_PASSWORD:-gaza_redis_2024}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - gaza-server-logs:/gaza-server/logs
+    networks:
+      - gaza-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:48080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+  # File Preview Server - 文件预览服务 (kkFileView)
+  file-preview-server:
+    build:
+      context: ./services/file-preview-server
+      dockerfile: Dockerfile
+    image: file-preview-server:latest
+    container_name: file-preview-server
+    restart: unless-stopped
+    ports:
+      - "${FILE_PREVIEW_PORT:-8012}:8012"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - file-preview-cache:/opt/kkFileView-4.4.0/file
+    networks:
+      - gaza-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8012"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  # MinerU Service - PDF转Markdown服务
+  mineru-service:
+    build:
+      context: ./services/mineru-service
+      dockerfile: Dockerfile
+    image: mineru-service:latest
+    container_name: mineru-service
+    restart: unless-stopped
+    ports:
+      - "${MINERU_API_PORT:-8000}:8000"
+    environment:
+      MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-modelscope}
+      PYTHONUNBUFFERED: 1
+      TZ: Asia/Shanghai
+    volumes:
+      - mineru-models:/root/.cache
+      - mineru-output:/app/output
+    networks:
+      - gaza-network
+    # GPU配置 (如果有GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           device_ids: ["0"]
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  # ==================== 前端服务 ====================
+
+  # Gaza UI - 管理后台前端 (yudao-ui-admin-vue3)
+  gaza-ui:
+    build:
+      context: ./services/gaza-ui
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+        VITE_BASE_PATH: /
+        VITE_APP_TITLE: ${VITE_APP_TITLE:-Gaza智能管理系统}
+        VITE_BASE_URL: /prod-api
+        VITE_APP_ENV: production
+    image: gaza-ui:latest
+    container_name: gaza-ui
+    restart: unless-stopped
+    ports:
+      - "${GAZA_UI_PORT:-80}:80"
+    depends_on:
+      gaza-server:
+        condition: service_healthy
+    networks:
+      - gaza-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  # Candidate App - HR候选人应用 (Next.js + React)
+  candidate-app:
+    build:
+      context: ./services/candidate-app
+      dockerfile: Dockerfile
+      args:
+        DATABASE_URL: mysql://${MYSQL_USER:-gaza_user}:${MYSQL_PASSWORD:-gaza_pass_2024}@mysql:3306/${MYSQL_DATABASE:-gaza_db}
+        ACCESS_TOKEN_AES_KEY: ${CANDIDATE_ACCESS_TOKEN_AES_KEY}
+        OAUTH2_CLIENT_ID: ${CANDIDATE_OAUTH2_CLIENT_ID}
+        OAUTH2_CLIENT_SECRET: ${CANDIDATE_OAUTH2_CLIENT_SECRET}
+        OAUTH2_USERNAME: ${CANDIDATE_OAUTH2_USERNAME}
+        OAUTH2_PASSWORD: ${CANDIDATE_OAUTH2_PASSWORD}
+        OAUTH2_TOKEN_URL: ${CANDIDATE_OAUTH2_TOKEN_URL:-http://gaza-server:48080/admin-api/system/oauth2/token}
+        OAUTH2_FILE_UPLOAD_URL: ${CANDIDATE_OAUTH2_FILE_UPLOAD_URL:-http://gaza-server:48080/admin-api/infra/file/upload}
+        ADMIN_SERVICE_BASE_URL: ${CANDIDATE_ADMIN_SERVICE_BASE_URL:-http://gaza-server:48080}
+        TENANT_ID: ${CANDIDATE_TENANT_ID:-600}
+        NEXT_PUBLIC_APP_NAME: ${CANDIDATE_APP_NAME:-候选人简历填写系统}
+        NEXT_PUBLIC_APP_VERSION: ${CANDIDATE_APP_VERSION:-1.0.0}
+    image: candidate-app:latest
+    container_name: candidate-app
+    restart: unless-stopped
+    ports:
+      - "${CANDIDATE_APP_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: mysql://${MYSQL_USER:-gaza_user}:${MYSQL_PASSWORD:-gaza_pass_2024}@mysql:3306/${MYSQL_DATABASE:-gaza_db}
+      ACCESS_TOKEN_AES_KEY: ${CANDIDATE_ACCESS_TOKEN_AES_KEY}
+      OAUTH2_CLIENT_ID: ${CANDIDATE_OAUTH2_CLIENT_ID}
+      OAUTH2_CLIENT_SECRET: ${CANDIDATE_OAUTH2_CLIENT_SECRET}
+      OAUTH2_USERNAME: ${CANDIDATE_OAUTH2_USERNAME}
+      OAUTH2_PASSWORD: ${CANDIDATE_OAUTH2_PASSWORD}
+      OAUTH2_TOKEN_URL: ${CANDIDATE_OAUTH2_TOKEN_URL:-http://gaza-server:48080/admin-api/system/oauth2/token}
+      OAUTH2_FILE_UPLOAD_URL: ${CANDIDATE_OAUTH2_FILE_UPLOAD_URL:-http://gaza-server:48080/admin-api/infra/file/upload}
+      ADMIN_SERVICE_BASE_URL: ${CANDIDATE_ADMIN_SERVICE_BASE_URL:-http://gaza-server:48080}
+      TENANT_ID: ${CANDIDATE_TENANT_ID:-600}
+      NEXT_PUBLIC_APP_NAME: ${CANDIDATE_APP_NAME:-候选人简历填写系统}
+      NEXT_PUBLIC_APP_VERSION: ${CANDIDATE_APP_VERSION:-1.0.0}
+      RUN_MIGRATIONS: ${CANDIDATE_RUN_MIGRATIONS:-false}
+      REGENERATE_PRISMA: ${CANDIDATE_REGENERATE_PRISMA:-false}
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+      gaza-server:
+        condition: service_healthy
+    volumes:
+      - candidate-uploads:/app/uploads
+      - candidate-logs:/app/logs
+    networks:
+      - gaza-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1); })"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  # ==================== 可选服务 ====================
+
+  # Nginx 反向代理 (可选，提供统一入口)
+  # 取消注释以启用
   # nginx:
   #   image: nginx:alpine
-  #   container_name: nginx
+  #   container_name: gaza-nginx
+  #   restart: unless-stopped
   #   ports:
   #     - "80:80"
   #     - "443:443"
   #   volumes:
   #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
   #     - ./nginx/ssl:/etc/nginx/ssl:ro
+  #     - nginx-logs:/var/log/nginx
   #   depends_on:
-  #     - vue-frontend
-  #     - react-frontend
-  #     - java-service-1
-  #     - java-service-2
-  #     - python-service
+  #     - gaza-ui
+  #     - candidate-app
+  #     - gaza-server
   #   networks:
-  #     - app-network
-  #   restart: unless-stopped
+  #     - gaza-network
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+  #     interval: 30s
+  #     timeout: 3s
+  #     retries: 3
 
+# ==================== 网络配置 ====================
 networks:
-  app-network:
+  gaza-network:
     driver: bridge
+    name: gaza-network
 
+# ==================== 数据卷 ====================
 volumes:
-  database-data:
+  # 数据库
+  mysql-data:
+    driver: local
   redis-data:
-  java-service-1-logs:
-  java-service-2-logs:
-  python-service-data:
+    driver: local
+
+  # 后端日志
+  gaza-server-logs:
+    driver: local
+
+  # 文件预览缓存
+  file-preview-cache:
+    driver: local
+
+  # MinerU
+  mineru-models:
+    driver: local
+  mineru-output:
+    driver: local
+
+  # Candidate App
+  candidate-uploads:
+    driver: local
+  candidate-logs:
+    driver: local
+
+  # Nginx (可选)
+  # nginx-logs:
+  #   driver: local
