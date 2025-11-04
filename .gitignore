@@ -1,0 +1,50 @@
+# 环境变量文件
+.env
+
+# 服务代码目录（实际项目代码）
+services/*/src/
+services/*/target/
+services/*/build/
+services/*/dist/
+services/*/node_modules/
+services/*/__pycache__/
+services/*/*.pyc
+services/*/venv/
+services/*/.venv/
+
+# 但保留Dockerfile和配置文件
+!services/*/Dockerfile
+!services/*/.dockerignore
+!services/*/nginx.conf
+!services/*/requirements.txt
+!services/*/package.json
+!services/*/pom.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+logs/
+
+# 备份文件
+*.bak
+*.backup
+backup/
+
+# SSL证书（如果本地测试）
+*.pem
+*.key
+*.crt
+nginx/ssl/
+
+# Docker volumes data
+volumes/
